@@ -1,74 +1,153 @@
-import os, random, asyncio, threading
+import os, random, asyncio, threading, math, requests
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from datetime import datetime, timedelta
 
 TOKEN = os.getenv("BOT_TOKEN")
+API_KEY = os.getenv("API_FOOTBALL_KEY")
 
 LEAGUES = {
-    "coupe_du_monde": {"name": "🏆 Coupe du Monde"},
-    "can": {"name": "🌍 CAN"},
-    "espagne": {"name": "🇪🇸 Espagne La Liga"},
-    "angleterre": {"name": "🏴󐁧󐁢󐁥󐁮󐁧󐁿 Angleterre Premier League"},
-    "france": {"name": "🇫🇷 France Ligue 1"},
+    "can": {"name": "🌍 CAN", "api_id": 6},
+    "espagne": {"name": "🇪🇸 La Liga", "api_id": 140},
+    "angleterre": {"name": "🏴󐁧󐁢󐁥󐁮󐁧󐁿 Premier League", "api_id": 39},
+    "france": {"name": "🇫🇷 Ligue 1", "api_id": 61},
+    "coupe_du_monde": {"name": "🏆 Coupe du Monde", "api_id": 1},
 }
 
-MATCHS = {
-    "coupe_du_monde": [("France", "Argentine", "21 Dec 2026"), ("Espagne", "Angleterre", "22 Dec 2026"), ("Allemagne", "Portugal", "23 Dec 2026")],
-    "can": [("Maroc", "Senegal", "21 Dec 2025"), ("Nigeria", "Cote d'Ivoire", "21 Dec 2025"), ("Egypte", "Algerie", "22 Dec 2025"), ("Togo", "Ghana", "22 Dec 2025")],
-    "espagne": [("Real Madrid", "Barcelone", "23 Nov 2026"), ("Atletico Madrid", "Seville", "23 Nov 2026")],
-    "angleterre": [("Arsenal", "Man City", "22 Nov 2026"), ("Liverpool", "Chelsea", "22 Nov 2026"), ("Man United", "Tottenham", "23 Nov 2026")],
-    "france": [("PSG", "Marseille", "22 Nov 2026"), ("Lyon", "Monaco", "22 Nov 2026"), ("Lille", "Lens", "23 Nov 2026")],
-}
+ELO_BASE = {"Maroc":1820,"Senegal":1780,"Nigeria":1750,"Cote d'Ivoire":1720,"Egypte":1700,"Algerie":1690,"Ghana":1620,"Togo":1450,"Real Madrid":1960,"Barcelone":1940,"Atletico Madrid":1880,"Seville":1750,"Arsenal":1930,"Man City":1950,"Liverpool":1920,"Chelsea":1860,"Man United":1820,"Tottenham":1800,"PSG":1930,"Marseille":1820,"Lyon":1780,"Monaco":1800,"Lille":1760,"Lens":1720,"France":1960,"Argentine":1950,"Espagne":1940,"Angleterre":1920,"Allemagne":1900,"Portugal":1890}
+
+HEADERS = {"x-rapidapi-key": API_KEY, "x-rapidapi-host": "v3.football.api-sports.io"} if API_KEY else {}
+
+def api_get(url):
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=10)
+        return r.json().get("response", [])
+    except:
+        return []
+
+def poisson(k, lam):
+    return (math.exp(-lam) * (lam ** k)) / math.factorial(k)
+
+def get_stats(team_id):
+    fixtures = api_get(f"https://v3.football.api-sports.io/fixtures?team={team_id}&last=5")
+    if not fixtures:
+        return {"pts": 8, "bm": 1.4, "be": 1.1}
+    pts=0; bm=0; be=0; n=0
+    for m in fixtures:
+        gh=m["goals"]["home"]; ga=m["goals"]["away"]
+        if gh is None: continue
+        is_home = m["teams"]["home"]["id"]==team_id
+        my = gh if is_home else ga
+        opp = ga if is_home else gh
+        bm+=my; be+=opp; n+=1
+        if my>opp: pts+=3
+        elif my==opp: pts+=1
+    n=max(1,n)
+    return {"pts": pts, "bm": bm/n, "be": be/n}
+
+def get_blessures(team_id):
+    if not team_id: return 0
+    return len(api_get(f"https://v3.football.api-sports.io/injuries?team={team_id}&season=2026"))
+
+def analyse(home, away, hid, aid):
+    st_h = get_stats(hid) if hid else {"pts":8,"bm":1.4,"be":1.1}
+    st_a = get_stats(aid) if aid else {"pts":8,"bm":1.4,"be":1.1}
+    bh = get_blessures(hid); ba = get_blessures(aid)
+    elo_h = ELO_BASE.get(home,1600) + 65 + (st_h["pts"]-7)*10 - bh*18
+    elo_a = ELO_BASE.get(away,1600) + (st_a["pts"]-7)*10 - ba*18
+    lam_h = max(0.3, min(3.5, 1.35 * (st_h["bm"]/1.35) * (st_a["be"]/1.35) * 1.22))
+    lam_a = max(0.3, min(3.5, 1.35 * (st_a["bm"]/1.35) * (st_h["be"]/1.35) * 0.85))
+    p_home=p_draw=p_away=p_over15=p_btts=p_under35=0
+    # SCORE EXACT - On cherche le score avec la plus grosse proba Poisson
+    best_score = "1-0"; best_score_p = 0
+    for gh in range(0,7):
+        for ga in range(0,7):
+            p = poisson(gh,lam_h)*poisson(ga,lam_a)
+            if p > best_score_p:
+                best_score_p = p; best_score = f"{gh}-{ga}"
+            if gh>ga: p_home+=p
+            elif gh==ga: p_draw+=p
+            else: p_away+=p
+            if gh+ga>1.5: p_over15+=p
+            if gh+ga<3.5: p_under35+=p
+            if gh>0 and ga>0: p_btts+=p
+    p_dnb_h = p_home + p_draw*(p_home/(p_home+p_away+0.001))
+    p_dnb_a = p_away + p_draw*(p_away/(p_home+p_away+0.001))
+    options = [
+        ("DNB HOME ✅", p_dnb_h),
+        ("DNB AWAY ✈️", p_dnb_a),
+        ("OVER 1.5 BUTS ⚽", p_over15),
+        ("UNDER 3.5 BUTS 🛡️", p_under35),
+        ("BTTS - LES 2 MARQUENT ⚽⚽", p_btts),
+        ("DOUBLE CHANCE 1X 🤝", p_home+p_draw),
+        ("DOUBLE CHANCE X2 🤝", p_away+p_draw),
+    ]
+    options.sort(key=lambda x: x[1], reverse=True)
+    best = options[0]
+    second = options[1]
+    if best[1] < 0.68:
+        dc = max([o for o in options if "DOUBLE CHANCE" in o[0]], key=lambda x: x[1])
+        best = dc
+        second = [o for o in options if o[0]!=dc[0]][0]
+    def feu(pts):
+        if pts>=12: return "🔥🔥🔥"
+        if pts>=8: return "🔥🔥"
+        if pts>=5: return "🔥"
+        return "❄️"
+    return best[0], min(93,int(best[1]*100)+6), int(best[1]*100), lam_h, lam_a, int(p_home*100), int(p_draw*100), int(p_away*100), feu(st_h["pts"]), feu(st_a["pts"]), bh, ba, best_score, int(best_score_p*100), second[0]
+
+def get_matchs(league_key):
+    if API_KEY:
+        try:
+            today=datetime.now().strftime("%Y-%m-%d")
+            nxt=(datetime.now()+timedelta(days=7)).strftime("%Y-%m-%d")
+            data=api_get(f"https://v3.football.api-sports.io/fixtures?league={LEAGUES[league_key]['api_id']}&season=2026&from={today}&to={nxt}")
+            if data:
+                return [(m["teams"]["home"]["name"],m["teams"]["away"]["name"],m["fixture"]["date"][:10],m["teams"]["home"]["id"],m["teams"]["away"]["id"]) for m in data[:8]], True
+        except: pass
+    FALLBACK={"can":[("Maroc","Senegal","21 Dec 2025",None,None),("Nigeria","Cote d'Ivoire","21 Dec 2025",None,None),("Egypte","Algerie","22 Dec 2025",None,None),("Togo","Ghana","22 Dec 2025",None,None)],"espagne":[("Real Madrid","Barcelone","23 Nov 2026",None,None),("Atletico Madrid","Seville","23 Nov 2026",None,None)],"angleterre":[("Arsenal","Man City","22 Nov 2026",None,None),("Liverpool","Chelsea","22 Nov 2026",None,None),("Man United","Tottenham","23 Nov 2026",None,None)],"france":[("PSG","Marseille","22 Nov 2026",None,None),("Lyon","Monaco","22 Nov 2026",None,None),("Lille","Lens","23 Nov 2026",None,None)],"coupe_du_monde":[("France","Argentine","21 Dec 2026",None,None),("Espagne","Angleterre","22 Dec 2026",None,None),("Allemagne","Portugal","23 Dec 2026",None,None)]}
+    return FALLBACK[league_key], False
 
 def make_prediction(league_key):
-    league = LEAGUES[league_key]
-    home, away, date = random.choice(MATCHS[league_key])
-    dnp = random.randint(52, 82)
-    conf = min(92, dnp + random.randint(-3, 8))
-    pick = "DNB HOME" if dnp >= 60 else "DNB AWAY" if dnp < 50 else "DNB HOME"
-    if dnp < 55:
-        pick = "DNB AWAY"
-    text = f"⚽ *WINMATCH - {league['name']}*\n\n{home} vs {away}\n📅 {date}\n\n🎯 *Prediction : {pick}*\n💯 Confiance : {conf}%\n📊 DNP : {dnp}%\n\n🔥 Bonne chance patron !"
-    kb = [[InlineKeyboardButton("🔄 NOUVELLE PREDICTION", callback_data=f"cat_{league_key}")], [InlineKeyboardButton("⬅️ AUTRE COMPETITION", callback_data="back")]]
+    league=LEAGUES[league_key]
+    matchs,is_live=get_matchs(league_key)
+    home,away,date,hid,aid=random.choice(matchs)
+    pick,conf,dnp,lam_h,lam_a,ph,pd,pa,feu_h,feu_a,bh,ba,score,score_p,second=analyse(home,away,hid,aid)
+    text=f"⚽ *WINMATCH PRO*\n\n{league['name']}\n{home} vs {away}\n📅 {date}\n\n🎯 *PREDICTION : {pick}*\n💯 Confiance : {conf}%\n📊 DNP : {dnp}%\n\n📈 *Analyse :*\nButs attendus : {lam_h:.1f} - {lam_a:.1f}\nProba : 1 = {ph}% | N = {pd}% | 2 = {pa}%\nForme : {home} {feu_h} | {away} {feu_a}\nBlessés : {bh} vs {ba}\n\n🔢 *Score Exact le plus probable : {score} ({score_p}%)*\n🛡️ *2ème Option Sûre : {second}*\n\n🔥 Bonne chance patron !"
+    kb=[[InlineKeyboardButton("🔄 NOUVELLE PREDICTION", callback_data=f"cat_{league_key}")],[InlineKeyboardButton("⬅️ AUTRE COMPETITION", callback_data="back")]]
     return text, InlineKeyboardMarkup(kb)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton(v["name"], callback_data=f"cat_{k}")] for k,v in LEAGUES.items()]
-    await update.message.reply_text("⚽ *WINMATCH*\nChoisis ta competition 👇", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    keyboard=[[InlineKeyboardButton(v["name"], callback_data=f"cat_{k}")] for k,v in LEAGUES.items()]
+    await update.message.reply_text("⚽ *WINMATCH PRO*\nPoisson + Elo + Forme + Blessés + Score Exact\nChoisis ta competition 👇", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
+    q=update.callback_query
     await q.answer()
     if q.data.startswith("cat_"):
-        key = q.data.replace("cat_", "")
-        text, kb = make_prediction(key)
+        key=q.data.replace("cat_","")
+        text,kb=make_prediction(key)
         await q.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
-    elif q.data == "back":
-        keyboard = [[InlineKeyboardButton(v["name"], callback_data=f"cat_{k}")] for k,v in LEAGUES.items()]
-        await q.edit_message_text("⚽ *WINMATCH*\nChoisis ta competition 👇", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    elif q.data=="back":
+        keyboard=[[InlineKeyboardButton(v["name"], callback_data=f"cat_{k}")] for k,v in LEAGUES.items()]
+        await q.edit_message_text("⚽ *WINMATCH PRO*\nChoisis ta competition 👇", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is alive")
-    def log_message(self, format, *args):
-        pass
+        self.send_response(200); self.end_headers(); self.wfile.write(b"Bot is alive")
+    def log_message(self, format, *args): pass
 
 def run_server():
-    port = int(os.environ.get("PORT", 10000))
-    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    port=int(os.environ.get("PORT",10000))
+    HTTPServer(("0.0.0.0",port), Handler).serve_forever()
 
 async def main():
     threading.Thread(target=run_server, daemon=True).start()
-    app = Application.builder().token(TOKEN).build()
+    app=Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button))
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    await asyncio.Event().wait()
+    await app.initialize(); await app.start(); await app.updater.start_polling(); await asyncio.Event().wait()
 
-if __name__ == "__main__":
+if __name__=="__main__":
     asyncio.run(main())
