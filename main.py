@@ -54,8 +54,6 @@ def analyse(home, away, hid, aid):
     st_h = get_stats(hid) if hid else {"pts":8,"bm":1.4,"be":1.1}
     st_a = get_stats(aid) if aid else {"pts":8,"bm":1.4,"be":1.1}
     bh = get_blessures(hid); ba = get_blessures(aid)
-    elo_h = ELO_BASE.get(home,1600) + 65 + (st_h["pts"]-7)*10 - bh*18
-    elo_a = ELO_BASE.get(away,1600) + (st_a["pts"]-7)*10 - ba*18
     lam_h = max(0.3, min(3.5, 1.35 * (st_h["bm"]/1.35) * (st_a["be"]/1.35) * 1.22))
     lam_a = max(0.3, min(3.5, 1.35 * (st_a["bm"]/1.35) * (st_h["be"]/1.35) * 0.85))
     p_home=p_draw=p_away=p_over15=p_btts=p_under35=0
@@ -73,22 +71,12 @@ def analyse(home, away, hid, aid):
             if gh>0 and ga>0: p_btts+=p
     p_dnb_h = p_home + p_draw*(p_home/(p_home+p_away+0.001))
     p_dnb_a = p_away + p_draw*(p_away/(p_home+p_away+0.001))
-    options = [
-        ("DNB HOME ✅", p_dnb_h),
-        ("DNB AWAY ✈️", p_dnb_a),
-        ("OVER 1.5 BUTS ⚽", p_over15),
-        ("UNDER 3.5 BUTS 🛡️", p_under35),
-        ("BTTS - LES 2 MARQUENT ⚽⚽", p_btts),
-        ("DOUBLE CHANCE 1X 🤝", p_home+p_draw),
-        ("DOUBLE CHANCE X2 🤝", p_away+p_draw),
-    ]
+    options = [("DNB HOME ✅", p_dnb_h),("DNB AWAY ✈️", p_dnb_a),("OVER 1.5 BUTS ⚽", p_over15),("UNDER 3.5 BUTS 🛡️", p_under35),("BTTS - LES 2 MARQUENT ⚽⚽", p_btts),("DOUBLE CHANCE 1X 🤝", p_home+p_draw),("DOUBLE CHANCE X2 🤝", p_away+p_draw),]
     options.sort(key=lambda x: x[1], reverse=True)
-    best = options[0]
-    second = options[1]
+    best = options[0]; second = options[1]
     if best[1] < 0.68:
         dc = max([o for o in options if "DOUBLE CHANCE" in o[0]], key=lambda x: x[1])
-        best = dc
-        second = [o for o in options if o[0]!=dc[0]][0]
+        best = dc; second = [o for o in options if o[0]!=dc[0]][0]
     def feu(pts):
         if pts>=12: return "🔥🔥🔥"
         if pts>=8: return "🔥🔥"
@@ -99,10 +87,8 @@ def analyse(home, away, hid, aid):
 def get_matchs(league_key):
     if API_KEY:
         try:
-            today=datetime.now().strftime("%Y-%m-%d")
-            nxt=(datetime.now()+timedelta(days=30)).strftime("%Y-%m-%d")
-            season = 2025 if league_key=="can" else 2026
-            data=api_get(f"https://v3.football.api-sports.io/fixtures?league={LEAGUES[league_key]['api_id']}&season={season}&from={today}&to={nxt}")
+            # NOUVEAU : On demande les 8 PROCHAINS matchs, même si c'est dans 1 an. Plus de date qui échappe.
+            data=api_get(f"https://v3.football.api-sports.io/fixtures?league={LEAGUES[league_key]['api_id']}&next=8")
             if data:
                 return [(m["teams"]["home"]["name"],m["teams"]["away"]["name"],m["fixture"]["date"][:10],m["teams"]["home"]["id"],m["teams"]["away"]["id"]) for m in data[:8]], True
         except: pass
