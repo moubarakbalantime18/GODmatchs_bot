@@ -1,7 +1,7 @@
 import os, random, asyncio, threading, math, requests
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from datetime import datetime, timedelta
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -22,8 +22,10 @@ HEADERS = {"x-rapidapi-key": API_KEY, "x-rapidapi-host": "v3.football.api-sports
 def api_get(url):
     try:
         r = requests.get(url, headers=HEADERS, timeout=10)
+        print("API CALL:", url, "STATUS:", r.status_code)
         return r.json().get("response", [])
-    except:
+    except Exception as e:
+        print("API ERROR:", e)
         return []
 
 def poisson(k, lam):
@@ -85,14 +87,25 @@ def analyse(home, away, hid, aid):
     return best[0], min(93,int(best[1]*100)+6), int(best[1]*100), lam_h, lam_a, int(p_home*100), int(p_draw*100), int(p_away*100), feu(st_h["pts"]), feu(st_a["pts"]), bh, ba, best_score, int(best_score_p*100), second[0]
 
 def get_matchs(league_key):
+    # 1. On essaie les PROCHAINS matchs
     if API_KEY:
         try:
-            # NOUVEAU : On demande les 8 PROCHAINS matchs, même si c'est dans 1 an. Plus de date qui échappe.
             data=api_get(f"https://v3.football.api-sports.io/fixtures?league={LEAGUES[league_key]['api_id']}&next=8")
             if data:
                 return [(m["teams"]["home"]["name"],m["teams"]["away"]["name"],m["fixture"]["date"][:10],m["teams"]["home"]["id"],m["teams"]["away"]["id"]) for m in data[:8]], True
         except: pass
-    FALLBACK={"can":[("Maroc","Senegal","21 Dec 2025",None,None),("Nigeria","Cote d'Ivoire","21 Dec 2025",None,None),("Egypte","Algerie","22 Dec 2025",None,None),("Togo","Ghana","22 Dec 2025",None,None)],"espagne":[("Real Madrid","Barcelone","23 Nov 2026",None,None),("Atletico Madrid","Seville","23 Nov 2026",None,None)],"angleterre":[("Arsenal","Man City","22 Nov 2026",None,None),("Liverpool","Chelsea","22 Nov 2026",None,None),("Man United","Tottenham","23 Nov 2026",None,None)],"france":[("PSG","Marseille","22 Nov 2026",None,None),("Lyon","Monaco","22 Nov 2026",None,None),("Lille","Lens","23 Nov 2026",None,None)],"coupe_du_monde":[("France","Argentine","21 Dec 2026",None,None),("Espagne","Angleterre","22 Dec 2026",None,None),("Allemagne","Portugal","23 Dec 2026",None,None)]}
+        # 2. Si ça échoue, on prend les matchs D'AUJOURD'HUI dans le monde entier
+        try:
+            today=datetime.now().strftime("%Y-%m-%d")
+            data2=api_get(f"https://v3.football.api-sports.io/fixtures?date={today}")
+            if data2:
+                filt=[m for m in data2 if m["league"]["id"]==LEAGUES[league_key]['api_id']]
+                if filt:
+                    return [(m["teams"]["home"]["name"],m["teams"]["away"]["name"],m["fixture"]["date"][:10],m["teams"]["home"]["id"],m["teams"]["away"]["id"]) for m in filt[:8]], True
+        except: pass
+    # 3. Si API est morte, on met la VRAIE date d'aujourd'hui pour ne plus voir 21 Dec 2025
+    today=datetime.now().strftime("%d %b %Y")
+    FALLBACK={"can":[(f"Maroc",f"Senegal",today,None,None),("Nigeria","Cote d'Ivoire",today,None,None),("Egypte","Algerie",today,None,None),("Togo","Ghana",today,None,None)],"espagne":[("Real Madrid","Barcelone",today,None,None),("Atletico Madrid","Seville",today,None,None)],"angleterre":[("Arsenal","Man City",today,None,None),("Liverpool","Chelsea",today,None,None),("Man United","Tottenham",today,None,None)],"france":[("PSG","Marseille",today,None,None),("Lyon","Monaco",today,None,None),("Lille","Lens",today,None,None)],"coupe_du_monde":[("France","Argentine",today,None,None),("Espagne","Angleterre",today,None,None),("Allemagne","Portugal",today,None,None)]}
     return FALLBACK[league_key], False
 
 def make_prediction(league_key):
@@ -100,7 +113,8 @@ def make_prediction(league_key):
     matchs,is_live=get_matchs(league_key)
     home,away,date,hid,aid=random.choice(matchs)
     pick,conf,dnp,lam_h,lam_a,ph,pd,pa,feu_h,feu_a,bh,ba,score,score_p,second=analyse(home,away,hid,aid)
-    text=f"⚽ *WINMATCH PRO*\n\n{league['name']}\n{home} vs {away}\n📅 {date}\n\n🎯 *PREDICTION : {pick}*\n💯 Confiance : {conf}%\n📊 DNP : {dnp}%\n\n📈 *Analyse :*\nButs attendus : {lam_h:.1f} - {lam_a:.1f}\nProba : 1 = {ph}% | N = {pd}% | 2 = {pa}%\nForme : {home} {feu_h} | {away} {feu_a}\nBlessés : {bh} vs {ba}\n\n🔢 *Score Exact : {score} ({score_p}%)*\n🛡️ *2ème Option : {second}*\n\n🔥 Bonne chance patron !"
+    api_txt = "🟢 API LIVE" if is_live else "🟠 MODE SECOURS - API OFF"
+    text=f"⚽ *WINMATCH PRO*\n\n{league['name']}\n{home} vs {away}\n📅 {date}\n{api_txt}\n\n🎯 *PREDICTION : {pick}*\n💯 Confiance : {conf}%\n📊 DNP : {dnp}%\n\n📈 *Analyse :*\nButs attendus : {lam_h:.1f} - {lam_a:.1f}\nProba : 1 = {ph}% | N = {pd}% | 2 = {pa}%\nForme : {home} {feu_h} | {away} {feu_a}\nBlessés : {bh} vs {ba}\n\n🔢 *Score Exact : {score} ({score_p}%)*\n🛡️ *2ème Option : {second}*\n\n🔥 Bonne chance patron !"
     kb=[[InlineKeyboardButton("🔄 NOUVELLE PREDICTION", callback_data=f"cat_{league_key}")],[InlineKeyboardButton("⬅️ AUTRE COMPETITION", callback_data="back")]]
     return text, InlineKeyboardMarkup(kb)
 
@@ -119,6 +133,17 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard=[[InlineKeyboardButton(v["name"], callback_data=f"cat_{k}")] for k,v in LEAGUES.items()]
         await q.edit_message_text("⚽ *WINMATCH PRO*\nChoisis ta competition 👇", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
+async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = (update.message.text or "").lower()
+    league_key = "angleterre"
+    if "can" in txt: league_key = "can"
+    elif "espagne" in txt or "liga" in txt: league_key = "espagne"
+    elif "france" in txt or "ligue" in txt: league_key = "france"
+    elif "monde" in txt or "coupe" in txt: league_key = "coupe_du_monde"
+    matchs, _ = get_matchs(league_key)
+    liste = "\n".join([f"• {h} vs {a} - {d}" for h,a,d,_,_ in matchs[:5]])
+    await update.message.reply_text(f"⚽ *PROCHAINS MATCHS - {LEAGUES[league_key]['name']}*\n\n{liste}\n\nClique sur une compétition pour avoir la prédiction 👇", parse_mode="Markdown")
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200); self.end_headers(); self.wfile.write(b"Bot is alive")
@@ -133,6 +158,7 @@ async def main():
     app=Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     await app.initialize(); await app.start(); await app.updater.start_polling(); await asyncio.Event().wait()
 
 if __name__=="__main__":
