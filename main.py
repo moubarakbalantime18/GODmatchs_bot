@@ -59,7 +59,6 @@ def analyse(home, away, hid, aid):
     lam_h = max(0.3, min(3.5, 1.35 * (st_h["bm"]/1.35) * (st_a["be"]/1.35) * 1.22))
     lam_a = max(0.3, min(3.5, 1.35 * (st_a["bm"]/1.35) * (st_h["be"]/1.35) * 0.85))
     p_home=p_draw=p_away=p_over15=p_btts=p_under35=0
-    # SCORE EXACT - On cherche le score avec la plus grosse proba Poisson
     best_score = "1-0"; best_score_p = 0
     for gh in range(0,7):
         for ga in range(0,7):
@@ -101,8 +100,9 @@ def get_matchs(league_key):
     if API_KEY:
         try:
             today=datetime.now().strftime("%Y-%m-%d")
-            nxt=(datetime.now()+timedelta(days=7)).strftime("%Y-%m-%d")
-            data=api_get(f"https://v3.football.api-sports.io/fixtures?league={LEAGUES[league_key]['api_id']}&season=2026&from={today}&to={nxt}")
+            nxt=(datetime.now()+timedelta(days=30)).strftime("%Y-%m-%d")
+            season = 2025 if league_key=="can" else 2026
+            data=api_get(f"https://v3.football.api-sports.io/fixtures?league={LEAGUES[league_key]['api_id']}&season={season}&from={today}&to={nxt}")
             if data:
                 return [(m["teams"]["home"]["name"],m["teams"]["away"]["name"],m["fixture"]["date"][:10],m["teams"]["home"]["id"],m["teams"]["away"]["id"]) for m in data[:8]], True
         except: pass
@@ -114,7 +114,7 @@ def make_prediction(league_key):
     matchs,is_live=get_matchs(league_key)
     home,away,date,hid,aid=random.choice(matchs)
     pick,conf,dnp,lam_h,lam_a,ph,pd,pa,feu_h,feu_a,bh,ba,score,score_p,second=analyse(home,away,hid,aid)
-    text=f"⚽ *WINMATCH PRO*\n\n{league['name']}\n{home} vs {away}\n📅 {date}\n\n🎯 *PREDICTION : {pick}*\n💯 Confiance : {conf}%\n📊 DNP : {dnp}%\n\n📈 *Analyse :*\nButs attendus : {lam_h:.1f} - {lam_a:.1f}\nProba : 1 = {ph}% | N = {pd}% | 2 = {pa}%\nForme : {home} {feu_h} | {away} {feu_a}\nBlessés : {bh} vs {ba}\n\n🔢 *Score Exact le plus probable : {score} ({score_p}%)*\n🛡️ *2ème Option Sûre : {second}*\n\n🔥 Bonne chance patron !"
+    text=f"⚽ *WINMATCH PRO*\n\n{league['name']}\n{home} vs {away}\n📅 {date}\n\n🎯 *PREDICTION : {pick}*\n💯 Confiance : {conf}%\n📊 DNP : {dnp}%\n\n📈 *Analyse :*\nButs attendus : {lam_h:.1f} - {lam_a:.1f}\nProba : 1 = {ph}% | N = {pd}% | 2 = {pa}%\nForme : {home} {feu_h} | {away} {feu_a}\nBlessés : {bh} vs {ba}\n\n🔢 *Score Exact : {score} ({score_p}%)*\n🛡️ *2ème Option : {second}*\n\n🔥 Bonne chance patron !"
     kb=[[InlineKeyboardButton("🔄 NOUVELLE PREDICTION", callback_data=f"cat_{league_key}")],[InlineKeyboardButton("⬅️ AUTRE COMPETITION", callback_data="back")]]
     return text, InlineKeyboardMarkup(kb)
 
